@@ -77,24 +77,79 @@ Compacte esses dois e mande.
 
 ## Do lado Linux (depois de receber os binários)
 
+Compilar é metade do trabalho. Esta seção documenta o resto, tudo **testado** —
+com o cliente entrando num servidor local e criando personagem.
+
+### 1. Instalar os binários
+
 ```bash
-# a instalação do cliente fica aqui
-cd /mnt/workspace/pessoal/fivem/client/FiveM.app
-
-# backup antes de trocar
-cp CoreRT.dll CoreRT.dll.orig
-
-# substituir pelos compilados
-cp /caminho/dos/novos/CoreRT.dll .
+cd .../client/FiveM.app
+cp CoreRT.dll CoreRT.dll.orig          # backup
+cp /caminho/novo/CoreRT.dll .
 ```
 
-**Atenção:** o updater do FiveM pode sobrescrever os binários customizados na
-próxima atualização. Se o crash voltar do nada, é o primeiro suspeito — basta
-recopiar.
+O `FiveM.exe` também pode ser trocado, mas **o updater o reverte** (aconteceu no
+primeiro lançamento). Não é problema: a correção dele é a do `UpdaterUI`, que tem
+contorno pela variável `CitizenFX_NoTenUI=1`.
 
-Ambiente validado do lado Linux (ver `docs/cliente-linux.md` no projeto do
-servidor):
+### 2. Runtime C++ compatível
 
-- Ubuntu 24.04, GE-Proton11-5, prefixo com `win11` (build 22000)
-- Rockstar Games Launcher instalado dentro do prefixo
-- GTA V **Legacy** (appid 271590), build 3258
+O `CoreRT.dll` é linkado contra o runtime do Visual Studio da máquina de build,
+mas o FiveM distribui o **próprio** runtime em `FiveM.app/bin/`, de outra safra.
+Sem casar os dois, o cliente crasha em `MSVCP140.dll+13028`.
+
+```bash
+protontricks --no-bwrap <APPID> -q vcrun2022
+# copiar de pfx/drive_c/windows/system32 para FiveM.app/bin/:
+#   msvcp140.dll msvcp140_1.dll msvcp140_2.dll msvcp140_atomic_wait.dll
+#   msvcp140_codecvt_ids.dll vcruntime140.dll vcruntime140_1.dll
+```
+
+> O `winetricks` do Ubuntu 24.04 (9.0) não reconhece o `wineserver` do GE-Proton
+> 11 e falha em silêncio. Use o upstream:
+> `curl -L -o ~/.local/bin/winetricks https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks`
+>
+> E o `protontricks` precisa de `--no-bwrap` no Ubuntu 24.04, porque
+> `kernel.apparmor_restrict_unprivileged_userns=1` bloqueia user namespaces fora
+> do perfil AppArmor do Steam.
+
+### 3. Prefixo
+
+- **Prefixo próprio do FiveM**, não o do GTA V: o Proton reescreve a versão do
+  Windows do prefixo do jogo a cada lançamento
+- **Rockstar Games Launcher instalado dentro dele** — o FiveM procura por
+  `C:\Program Files\Rockstar Games\Launcher\Launcher.exe`
+- **Logar no launcher ao menos uma vez, com o FiveM fechado** (ele é de instância
+  única). É o login que grava `AppData/Local/DigitalEntitlements`, sem o qual o
+  servidor recusa a conexão
+- **Registro apontando o jogo da Steam**, senão o launcher tenta instalar um GTA V
+  que já existe e trava em "Updating":
+
+```
+[HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Rockstar Games\Grand Theft Auto V]
+"InstallFolderSteam"="Z:\\caminho\\para\\steamapps\\common\\Grand Theft Auto V\\"
+```
+
+### 4. O servidor também precisa de ajuste
+
+O cliente sob Wine é **sempre inseguro** (o `ComponentLoader` troca `adhesive`
+por `sticky`) e nunca emite ticket. Só entra em servidor preparado:
+
+| Ajuste | Sem ele |
+|---|---|
+| `+set sv_lan 1` na linha de comando | `No authentication ticket was specified` |
+| remover `"svadhesive"` de `components.json` | `Could not get resource mounter for resource X` |
+
+E se o servidor usa **Qbox/qbx_core** (ou fork), há um terceiro: o modo LAN
+desliga os identificadores, o jogador chega sem `license:` e o framework recusa
+com `No Valid Rockstar License Found`. É preciso um identificador substituto em
+três pontos — no `playerConnecting`, no `Login` e no `CheckPlayerData` —, e ele
+deve derivar do **nome**, nunca do `source` (que muda entre a conexão e o login).
+
+> Nada disso serve para servidor público: é configuração de desenvolvimento
+> local, e desliga a validação de posse do jogo.
+
+## Ambiente validado
+
+Ubuntu 24.04.4 (kernel 7.0), RTX 3060 (driver 595.84), Steam nativo,
+GE-Proton11-5, GTA V **Legacy** (appid 271590) build 3258, FXServer 25770.
