@@ -1,0 +1,104 @@
+name: Wine-compat FiveM build
+
+# Compila o cliente FiveM com os patches de compatibilidade Wine/Proton e
+# publica os binarios como artifact. O ci_build.yml do upstream apenas valida
+# a compilacao e nao sobe nada, por isso este workflow separado.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build:
+    name: FiveM (wine-compat)
+    runs-on: windows-2022  # o build hardcoda VS 2022; windows-latest ja migrou para VS 18
+    timeout-minutes: 180
+    env:
+      PROGRAM: five
+    steps:
+      - name: Checkout
+        shell: bash
+        run: |
+          # D: e pequeno demais para a arvore do FiveM, entao usamos C:
+          ROOT="C:\b"
+          ROOT_REPO="$ROOT/$PROGRAM"
+          ROOT_DEP="$ROOT/dep"
+          JOB_SLOTS=$(nproc --all)
+
+          echo "ROOT_REPO=$ROOT_REPO" >> "$GITHUB_ENV"
+          echo "ROOT_DEP=$ROOT_DEP" >> "$GITHUB_ENV"
+          echo "JOB_SLOTS=$JOB_SLOTS" >> "$GITHUB_ENV"
+
+          mkdir -p "$ROOT_REPO" && cd "$_" || exit 1
+
+          git init .
+          git config core.symlinks true
+          git remote add origin "https://github.com/${{ github.repository }}"
+          git pull origin "${{ github.ref_name }}" --depth=1
+          git submodule update --jobs=$JOB_SLOTS --init --depth=1
+
+      - name: Dependencies
+        shell: bash
+        run: mkdir -p "$ROOT_DEP" && cd "$_" || exit 1
+
+      - name: Preflight
+        shell: pwsh
+        run: |
+          # Levanta de uma vez tudo que o build exige, para nao descobrir
+          # cada dependencia ausente numa rodada separada.
+          Write-Host "--- Windows SDKs ---"
+          Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Include" |
+            Select-Object -ExpandProperty Name
+
+          Write-Host "--- clang-cl (premake usa toolset msc-llvm) ---"
+          $clang = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm" -Recurse -Filter clang-cl.exe -ErrorAction SilentlyContinue
+          if ($clang) { $clang | ForEach-Object { Write-Host $_.FullName } } else { Write-Host "AUSENTE" }
+
+          Write-Host "--- MSYS2 / pacman (prebuild_natives.cmd exige) ---"
+          if (Test-Path "C:\msys64\usr\bin\pacman.exe") { Write-Host "ok" } else { Write-Host "AUSENTE" }
+
+          Write-Host "--- Pythons disponiveis ---"
+          Get-ChildItem "C:\hostedtoolcache\windows\Python" | Select-Object -ExpandProperty Name
+
+      - name: Use Python 3.11 for node-gyp
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Point node-gyp at Python 3.11
+        shell: bash
+        run: |
+          # node-gyp 9.3.1 importa distutils, removido no Python 3.12+.
+          echo "npm_config_python=$(which python)" >> "$GITHUB_ENV"
+          python --version
+
+      - name: Compile
+        shell: bash
+        run: |
+          cd "$ROOT_REPO"
+          BUILD_SCRIPT=".github/workflows/ci/build_windows.sh"
+          PLATFORM=
+          chmod +x "$BUILD_SCRIPT"
+          $BUILD_SCRIPT "$ROOT_DEP" $JOB_SLOTS
+
+      - name: Locate output
+        shell: bash
+        run: |
+          cd "$ROOT_REPO"
+          echo "--- binarios encontrados ---"
+          find code/bin -maxdepth 4 -type f \( -name '*.dll' -o -name '*.exe' \) -printf '%10s  %p\n' | sort -k2 | head -60
+          echo "--- alvos do patch ---"
+          find code/bin -name 'CoreRT.dll' -o -name 'FiveM.exe' | while read f; do
+            echo "$(sha256sum "$f")"
+          done
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: FiveM-wine-compat-x64
+          path: C:\b\five\code\bin\five\release
+          if-no-files-found: error
+          retention-days: 30
