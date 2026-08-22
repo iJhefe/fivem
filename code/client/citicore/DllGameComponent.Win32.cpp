@@ -20,6 +20,7 @@
 #include <Hooking.Aux.h>
 
 #include <MinHook.h>
+#include <LaunchMode.h>
 
 static NTSTATUS(NTAPI* g_origRtlRaiseException)(_In_ PEXCEPTION_RECORD ExceptionRecord);
 static BOOL(NTAPI* g_origZwQueryDebugFilterState)(_In_ ULONG ComponentId, _In_ ULONG Level);
@@ -32,17 +33,23 @@ struct HardErrorScope
 	{
 		ms_curErrScope = this;
 
-		// OSBuildNumber
-		auto osBuildNumber = *(WORD*)((char*)NtCurrentTeb()->ProcessEnvironmentBlock + 0x0120);
 
-		// 19H1, Vb and Mn seem to adhere to this memory layout.
-		// Not sure about Fe and above, so taking out 20000.
-		if (osBuildNumber >= 18362 && osBuildNumber < 19628)
+		// Patches NtGlobalFlag to enable the FLG_SHOW_LDR_SNAPS debugging flag - https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/show-loader-snaps
+		// This is dependent on memory layout, so let's skip it on Wine.
+		if (!CfxIsWine())
 		{
-			auto fltUsed = (char*)GetProcAddress(GetModuleHandle(L"ntdll.dll"), "_fltused");
-			m_oldLdrFlags = *(int*)(fltUsed - 16);
+			// OSBuildNumber
+			auto osBuildNumber = *(WORD*)((char*)NtCurrentTeb()->ProcessEnvironmentBlock + 0x0120);
 
-			*(int*)(fltUsed - 16) |= 2; // loader snaps for error
+			// 19H1, Vb and Mn seem to adhere to this memory layout.
+			// Not sure about Fe and above, so taking out 20000.
+			if (osBuildNumber >= 18362 && osBuildNumber < 19628)
+			{
+				auto fltUsed = (char*)GetProcAddress(GetModuleHandle(L"ntdll.dll"), "_fltused");
+				m_oldLdrFlags = *(int*)(fltUsed - 16);
+
+				*(int*)(fltUsed - 16) |= 2; // loader snaps for error
+			}
 		}
 
 		DisableToolHelpScope thScope;
