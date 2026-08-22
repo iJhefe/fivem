@@ -44,34 +44,36 @@ jobs:
         shell: bash
         run: mkdir -p "$ROOT_DEP" && cd "$_" || exit 1
 
-      - name: Install Windows 11 SDK 22000
+      - name: Preflight
         shell: pwsh
         run: |
-          # A solucao aponta para 10.0.22000.0. A imagem windows-2022 traz
-          # 19041/22621/26100, mas nao esse. vs_installer nao funciona headless
-          # aqui, entao usamos o choco e caimos no instalador oficial se falhar.
-          $sdkInc = "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22000.0"
+          # Levanta de uma vez tudo que o build exige, para nao descobrir
+          # cada dependencia ausente numa rodada separada.
+          Write-Host "--- Windows SDKs ---"
+          Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Include" |
+            Select-Object -ExpandProperty Name
 
-          choco install windows-sdk-11-version-21h2-all -y --no-progress
-          Write-Host "choco exit: $LASTEXITCODE"
+          Write-Host "--- clang-cl (premake usa toolset msc-llvm) ---"
+          $clang = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm" -Recurse -Filter clang-cl.exe -ErrorAction SilentlyContinue
+          if ($clang) { $clang | ForEach-Object { Write-Host $_.FullName } } else { Write-Host "AUSENTE" }
 
-          if (-not (Test-Path $sdkInc)) {
-            Write-Host "choco nao entregou o SDK; tentando o instalador oficial."
-            $url = "https://go.microsoft.com/fwlink/p/?linkid=2196241"
-            Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\winsdksetup.exe"
-            $p = Start-Process -FilePath "$env:RUNNER_TEMP\winsdksetup.exe" `
-              -ArgumentList "/quiet","/norestart","/features","OptionId.WindowsDesktopSoftwareDevelopmentKit" `
-              -Wait -PassThru -NoNewWindow
-            Write-Host "winsdksetup exit: $($p.ExitCode)"
-          }
+          Write-Host "--- MSYS2 / pacman (prebuild_natives.cmd exige) ---"
+          if (Test-Path "C:\msys64\usr\bin\pacman.exe") { Write-Host "ok" } else { Write-Host "AUSENTE" }
 
-          if (Test-Path $sdkInc) {
-            Write-Host "SDK 10.0.22000.0 disponivel."
-          } else {
-            Write-Host "::error::SDK 10.0.22000.0 continua ausente."
-            Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Include" | Select-Object -ExpandProperty Name
-            exit 1
-          }
+          Write-Host "--- Pythons disponiveis ---"
+          Get-ChildItem "C:\hostedtoolcache\windows\Python" | Select-Object -ExpandProperty Name
+
+      - name: Use Python 3.11 for node-gyp
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Point node-gyp at Python 3.11
+        shell: bash
+        run: |
+          # node-gyp 9.3.1 importa distutils, removido no Python 3.12+.
+          echo "npm_config_python=$(which python)" >> "$GITHUB_ENV"
+          python --version
 
       - name: Compile
         shell: bash
